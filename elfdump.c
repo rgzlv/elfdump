@@ -21,7 +21,13 @@
 #define ELFXX_WORD(class, ptr) \
 	((class) == ELFCLASS32 ? (Elf32_Word *)(ptr) : (Elf64_Word *)(ptr))
 
+/*
+#define ELFXX_ADDR(class, ptr) \
+	((class) == ELFCLASS32 ? (Elf32_Addr *)(ptr) : (Elf64_Addr *)(ptr))
+*/
+
 #define ELFXX_WORD_PRI PRIu32
+#define ELFXX_ADDR_PRI(class) ((class) == ELFCLASS32 ? PRIx32 : PRIx64)
 
 enum color {
 	COLOR_NONE,
@@ -53,6 +59,22 @@ char *fmt_addr = "%016x ";
 int cols = 8;
 char *ascii;
 struct msg *msgs = &(struct msg){0};
+
+void usage(void) {
+	printf("Usage: %s [FLAG...] FILE\n", cx_progname);
+	printf("Dump the bytes of FILE and show their ELF file format meaning.\n\n");
+	printf("Flags:\n"
+"  -x          hexadecimal byte output\n"
+"  -d          decimal byte output\n"
+"  -b          binary byte output\n"
+"  -X          hexadecimal address output\n"
+"  -D          decimal address output\n"
+"  -B          binary address output\n"
+"  -f FORMAT   C format string for byte output\n"
+"  -F FORMAT   C format string for address output\n"
+"  -c COLUMNS  number of columns (bytes) to show in a row\n"
+	);
+}
 
 const char *abitostr(unsigned char abi) {
 	switch (abi) {
@@ -537,6 +559,18 @@ int elfdump(unsigned char *buf, size_t size) {
 	}
 	msg_queue(version_msg, color, !*ELFXX_WORD(class, buf), *ELFXX_WORD(class, buf));
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Word) : sizeof(Elf64_Word));
+	color = color_next(color);
+
+	char *entry_msg = malloc(sizeof("ehdr.e_entry == #") + 64);
+	if (!entry_msg) return EXIT_FAILURE;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat"
+	sprintf(entry_msg,
+		class == ELFCLASS32 ? "ehdr.e_entry == %#" PRIx32 : "ehdr.e_entry == %#" PRIx64,
+		class == ELFCLASS32 ? *(Elf32_Addr *)buf : *(Elf64_Addr *)buf);
+#pragma GCC diagnostic pop
+	msg_queue(entry_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Addr) : sizeof(Elf64_Addr));
 
 	end_line(org, buf, true);
 
@@ -546,7 +580,7 @@ int elfdump(unsigned char *buf, size_t size) {
 int main(int argc, char **argv) {
 	cx_progname = "xelf";
 	int opt;
-	const char *opts = ":xdbXDBf:F:c:";
+	const char *opts = ":xdbXDBf:F:c:h";
 	while ((opt = getopt(argc, argv, opts)) != -1) {
 		switch (opt) {
 		case 'x': fmt_byte = "%02x "; break;
@@ -567,6 +601,7 @@ int main(int argc, char **argv) {
 			cols = (int)v;
 			break;
 		}
+		case 'h': usage(); return EXIT_SUCCESS;
 		case ':': cx_errx("missing value for flag -%c %s", optopt, optarg);
 		case '?': cx_errx("unrecognized flag -%c", optopt);
 		default: abort();
