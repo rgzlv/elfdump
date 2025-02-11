@@ -358,7 +358,10 @@ struct msg *msg_queue(const char *s, enum color color, bool bad, bool own) {
 	else {
 		own = true;
 		msg->s = malloc(strlen(s) + 2);
-		if (!msg->s) return NULL;
+		if (!msg->s) {
+			free(msg);
+			return NULL;
+		}
 		*(char *)msg->s = '!';
 		strcpy((char *)msg->s + 1, s);
 	}
@@ -390,10 +393,11 @@ void end_line(unsigned char *org, unsigned char *buf, bool last) {
 		// get the length of a byte string (plus the space, if any)
 		// 128 to accommodate longer formats passed to -f
 		char byte_s[128] = {0};
-		snprintf(byte_s, 1024, fmt_byte, 0);
+		snprintf(byte_s, 128, fmt_byte, 0);
 		int pad_len = strlen(byte_s) * rem;
 		// pad that amount with spaces
 		printf("%*c", pad_len, ' ');
+		// clean up ascii so nothing's leftover from the previous row
 		char *old_ascii = ascii + pos_col;
 		while (*old_ascii) {
 			*old_ascii = ' ';
@@ -510,8 +514,6 @@ int elfdump(unsigned char *buf, size_t size) {
 	color = color_next(color);
 
 	const char *type_str = NULL;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wtype-limits"
 	switch (*(ELFXX_HALF(class, buf))) {
 	case ET_NONE: type_str = "none"; break;
 	case ET_REL: type_str = "relocatable"; break;
@@ -522,10 +524,9 @@ int elfdump(unsigned char *buf, size_t size) {
 	if (!type_str) {
 		if (*(ELFXX_HALF(class, buf)) >= ET_LOOS && *(ELFXX_HALF(class, buf)) <= ET_HIOS)
 			type_str = "OS specific";
-		else if (*(ELFXX_HALF(class, buf)) >= ET_LOPROC && *(ELFXX_HALF(class, buf)) <= ET_HIPROC)
+		else if (*(ELFXX_HALF(class, buf)) >= ET_LOPROC)
 			type_str = "processor specific";
 	}
-#pragma GCC diagnostic pop
 	char *type_msg;
 	if (!type_str)
 		type_msg = "ehdr.e_type";
@@ -538,6 +539,8 @@ int elfdump(unsigned char *buf, size_t size) {
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
+	// TODO: there's regions of reserved values for machine's, check if the value
+	// isn't in those regions
 	const char *machine_str = machinetostr(buf, class);
 	char *machine_msg;
 	if (!machine_str) machine_msg = "ehdr.e_machine";
@@ -561,16 +564,105 @@ int elfdump(unsigned char *buf, size_t size) {
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Word) : sizeof(Elf64_Word));
 	color = color_next(color);
 
-	char *entry_msg = malloc(sizeof("ehdr.e_entry == #") + 64);
+	char *entry_msg = malloc(sizeof("ehdr.e_entry == #") + 16);
 	if (!entry_msg) return EXIT_FAILURE;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat"
-	sprintf(entry_msg,
-		class == ELFCLASS32 ? "ehdr.e_entry == %#" PRIx32 : "ehdr.e_entry == %#" PRIx64,
-		class == ELFCLASS32 ? *(Elf32_Addr *)buf : *(Elf64_Addr *)buf);
-#pragma GCC diagnostic pop
+	if (class == ELFCLASS32)
+		sprintf(entry_msg, "ehdr.e_entry == %#" PRIx32, *(Elf32_Addr *)buf);
+	else
+		sprintf(entry_msg, "ehdr.e_entry == %#" PRIx64, *(Elf64_Addr *)buf);
 	msg_queue(entry_msg, color, false, true);
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Addr) : sizeof(Elf64_Addr));
+	color = color_next(color);
+
+	char *phoff_msg = malloc(sizeof("ehdr.e_phoff == #") + 16);
+	if (!phoff_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(phoff_msg, "ehdr.e_phoff == %#" PRIx32, *(Elf32_Off *)buf);
+	else
+		sprintf(phoff_msg, "ehdr.e_phoff == %#" PRIx64, *(Elf64_Off *)buf);
+	msg_queue(phoff_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Off) : sizeof(Elf64_Off));
+	color = color_next(color);
+
+	char *shoff_msg = malloc(sizeof("ehdr.e_shoff == #") + 16);
+	if (!phoff_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(shoff_msg, "ehdr.e_shoff == %#" PRIx32, *(Elf32_Off *)buf);
+	else
+		sprintf(shoff_msg, "ehdr.e_shoff == %#" PRIx64, *(Elf64_Off *)buf);
+	msg_queue(shoff_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Off) : sizeof(Elf64_Off));
+	color = color_next(color);
+
+	char *flags_msg = malloc(sizeof("ehdr.e_flags == #") + 8);
+	if (!flags_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(flags_msg, "ehdr.e_flags == %#" PRIx32, *(Elf32_Word *)buf);
+	else
+		sprintf(flags_msg, "ehdr.e_flags == %#" PRIx32, *(Elf64_Word *)buf);
+	msg_queue(flags_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Word) : sizeof(Elf64_Word));
+	color = color_next(color);
+
+	char *ehsize_msg = malloc(sizeof("ehdr.e_ehsize == 0x#### (#####)"));
+	if (!ehsize_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(ehsize_msg, "ehdr.e_ehsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf32_Half *)buf, *(Elf32_Half *)buf);
+	else
+		sprintf(ehsize_msg, "ehdr.e_ehsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf64_Half *)buf, *(Elf64_Half *)buf);
+	msg_queue(ehsize_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
+
+	char *phentsize_msg = malloc(sizeof("ehdr.e_phentsize == 0x#### (#####)"));
+	if (!phentsize_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(phentsize_msg, "ehdr.e_phentsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf32_Half *)buf, *(Elf32_Half *)buf);
+	else
+		sprintf(phentsize_msg, "ehdr.e_phentsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf64_Half *)buf, *(Elf64_Half *)buf);
+	msg_queue(phentsize_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
+
+	char *phnum_msg = malloc(sizeof("ehdr.e_phnum == #####"));
+	if (!phnum_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(phnum_msg, "ehdr.e_phnum == %" PRIu16, *(Elf32_Half *)buf);
+	else
+		sprintf(phnum_msg, "ehdr.e_phnum == %" PRIu16, *(Elf64_Half *)buf);
+	msg_queue(phnum_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
+
+	char *shentsize_msg = malloc(sizeof("ehdr.e_shentsize == 0x#### (#####)"));
+	if (!shentsize_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(shentsize_msg, "ehdr.e_shentsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf32_Half *)buf, *(Elf32_Half *)buf);
+	else
+		sprintf(shentsize_msg, "ehdr.e_shentsize == %#" PRIx16 " (%" PRIu16 ")", *(Elf64_Half *)buf, *(Elf64_Half *)buf);
+	msg_queue(shentsize_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
+
+	char *shnum_msg = malloc(sizeof("ehdr.e_shnum == #####"));
+	if (!shnum_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(shnum_msg, "ehdr.e_shnum == %" PRIu16, *(Elf32_Half *)buf);
+	else
+		sprintf(shnum_msg, "ehdr.e_shnum == %" PRIu16, *(Elf64_Half *)buf);
+	msg_queue(shnum_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
+
+	char *shstrndx_msg = malloc(sizeof("ehdr.e_shstrndx == #####"));
+	if (!shstrndx_msg) return EXIT_FAILURE;
+	if (class == ELFCLASS32)
+		sprintf(shstrndx_msg, "ehdr.e_shstrndx == %" PRIu16, *(Elf32_Half *)buf);
+	else
+		sprintf(shstrndx_msg, "ehdr.e_shstrndx == %" PRIu16, *(Elf64_Half *)buf);
+	msg_queue(shstrndx_msg, color, false, true);
+	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
+	color = color_next(color);
 
 	end_line(org, buf, true);
 
@@ -623,5 +715,6 @@ int main(int argc, char **argv) {
 	msgs->prev = msgs; msgs->next = msgs;
 	int ret = elfdump(buf, (size_t)st.st_size);
 	free(buf);
+	free(ascii);
 	return ret;
 }
