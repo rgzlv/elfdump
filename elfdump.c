@@ -359,7 +359,6 @@ struct msg *msg_queue(const char *s, enum color color, bool bad, bool own) {
 	msg->prev = msgs->prev; msg->next = msgs;
 	if (!bad) msg->s = s;
 	else {
-		own = true;
 		msg->s = malloc(strlen(s) + 2);
 		if (!msg->s) {
 			free(msg);
@@ -367,6 +366,8 @@ struct msg *msg_queue(const char *s, enum color color, bool bad, bool own) {
 		}
 		*(char *)msg->s = '!';
 		strcpy((char *)msg->s + 1, s);
+		if (own) free(s);
+		else own = true;
 	}
 	msg->color = color;
 	msg->own = own;
@@ -434,7 +435,7 @@ void show_byte(struct buf *buf, enum color color) {
 	bool first = pos == 0;
 	bool first_col = pos_col == (uintptr_t)0;
 	if (first_col && !first) end_line(*buf, false);
-	if (first || first_col) printf(fmt_addr, (void *)buf->pos);
+	if (first || first_col) printf(fmt_addr, (void *)(buf->pos - buf->org));
 	if (*buf->pos >= ' ' && *buf->pos <= '~') ascii[pos % cols] = *buf->pos;
 	else ascii[pos % cols] = '.';
 	printf(color_fmt(color));
@@ -447,11 +448,50 @@ void show_bytes(struct buf *buf, enum color color, size_t count) {
 	while (count--) show_byte(buf, color);
 }
 
-int phdrdump(struct buf buf) {
+int phdrdump(uint16_t phnum, uint16_t phentsize, struct buf *buf, uint8_t class, enum color color) {
+	if (buf->size - (buf->pos - buf->org) < phnum * phentsize)
+		cx_errx("file is too small for program header table to fit at phoff");
+
+	for (uint16_t i = 0; i < phnum; i++) {
+		if (i != phnum) color = color_next(color);
+
+		uint32_t type = *(uint32_t *)buf->pos;
+		char *type_str = malloc(sizeof("phdr[#####].p_type == #") + 64);
+		if (!type_str) return EXIT_FAILURE;
+		const char *type_str_name;
+		switch (type) {
+		case PT_NULL: type_str_name = "PT_NULL"; break;
+		case PT_LOAD: type_str_name = "PT_LOAD"; break;
+		case PT_DYNAMIC: type_str_name = "PT_DYNAMIC"; break;
+		case PT_INTERP: type_str_name = "PT_INTERP"; break;
+		case PT_NOTE: type_str_name = "PT_NOTE"; break;
+		case PT_SHLIB: type_str_name = "PT_SHLIB"; break;
+		case PT_PHDR: type_str_name = "PT_PHDR"; break;
+		case PT_GNU_STACK: type_str_name = "PT_GNU_STACK"; break;
+		default:
+			if (type >= PT_LOPROC && type <= PT_HIPROC)
+				type_str_name = "[PT_LOPROC, PT_HIPROC]";
+			else type_str_name = NULL;
+		}
+		if (!type_str_name)
+			sprintf(type_str, "phdr[%" PRIu16 "].p_type", i);
+		else
+			sprintf(type_str, "phdr[%" PRIu16 "].p_type == %s", i, type_str_name);
+		msg_queue(type_str, color, !type_str_name, true);
+		show_bytes(buf, color, sizeof(type));
+		if (type == PT_NULL) continue;
+		color = color_next(color);
+
+		msg_queue("remaining", color, false, false);
+		show_bytes(buf, color, sizeof(Elf64_Phdr) - sizeof(type));
+	}
+
 	return EXIT_SUCCESS;
 }
 
-int shdrdump(struct buf buf) {
+int shdrdump(uint16_t shnum, uint16_t shentsize, struct buf *buf, uint8_t class, enum color color) {
+	if (buf->size - (buf->pos - buf->org) < shnum * shentsize)
+		cx_errx("file is too small for section header table to fit at shoff");
 	return EXIT_SUCCESS;
 }
 
@@ -633,6 +673,7 @@ int elfdump(unsigned char *bytes, size_t size) {
 	show_bytes(&buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
+	uint16_t phentsize = *(uint16_t *)buf.pos;
 	char *phentsize_msg = malloc(sizeof("ehdr.e_phentsize == 0x#### (#####)"));
 	if (!phentsize_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -643,6 +684,7 @@ int elfdump(unsigned char *bytes, size_t size) {
 	show_bytes(&buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
+	uint16_t phnum = *(uint16_t *)buf.pos;
 	char *phnum_msg = malloc(sizeof("ehdr.e_phnum == #####"));
 	if (!phnum_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -653,6 +695,7 @@ int elfdump(unsigned char *bytes, size_t size) {
 	show_bytes(&buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
+	uint16_t shentsize = *(uint16_t *)buf.pos;
 	char *shentsize_msg = malloc(sizeof("ehdr.e_shentsize == 0x#### (#####)"));
 	if (!shentsize_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -663,6 +706,7 @@ int elfdump(unsigned char *bytes, size_t size) {
 	show_bytes(&buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
+	uint16_t shnum = *(uint16_t *)buf.pos;
 	char *shnum_msg = malloc(sizeof("ehdr.e_shnum == #####"));
 	if (!shnum_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -716,8 +760,8 @@ int elfdump(unsigned char *bytes, size_t size) {
 	next_off = phoff < shoff ? phoff : shoff;
 	// in case shdr is missing on executables, phdr on relocatables, etc.
 	if (!next_off) next_off = next_off == phoff ? shoff : phoff;
-	if (next_off + (next_off == phoff ? phdr_size : shdr_size) > buf.size)
-		cx_errx("table after ELF header spans out of file's bounds");
+	if (next_off > buf.size)
+		cx_errx("first (%s) table starts out of file bounds", next_off == phoff ? "phdr" : "shdr");
 
 	if ((uintptr_t)(buf.pos - buf.org) < next_off)
 		msg_queue("non-ELF data", color, false, false);
@@ -727,11 +771,12 @@ int elfdump(unsigned char *bytes, size_t size) {
 
 	int ret;
 	if (next_off == phoff) {
-		if ((ret = phdrdump(buf)))
+		if ((ret = phdrdump(phnum, phentsize, &buf, class, color)))
 			return ret;
 	} else
-		if ((ret = shdrdump(buf)))
+		if ((ret = shdrdump(shnum, shentsize, &buf, class, color)))
 			return ret;
+	color = color_next(color);
 
 	end_line(buf, true);
 	return EXIT_SUCCESS;
