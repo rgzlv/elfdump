@@ -21,11 +21,6 @@
 #define ELFXX_WORD(class, ptr) \
 	((class) == ELFCLASS32 ? (Elf32_Word *)(ptr) : (Elf64_Word *)(ptr))
 
-/*
-#define ELFXX_ADDR(class, ptr) \
-	((class) == ELFCLASS32 ? (Elf32_Addr *)(ptr) : (Elf64_Addr *)(ptr))
-*/
-
 #define ELFXX_WORD_PRI PRIu32
 #define ELFXX_ADDR_PRI(class) ((class) == ELFCLASS32 ? PRIx32 : PRIx64)
 
@@ -444,6 +439,14 @@ void show_bytes(unsigned char *org, unsigned char **buf, enum color color, size_
 	while (count--) show_byte(org, buf, color);
 }
 
+int phdrdump(unsigned char *org, unsigned char *buf, size_t size) {
+	return EXIT_SUCCESS;
+}
+
+int shdrdump(unsigned char *org, unsigned char *buf, size_t size) {
+	return EXIT_SUCCESS;
+}
+
 int elfdump(unsigned char *buf, size_t size) {
 	if (size < sizeof(Elf32_Ehdr)) cx_errx("size < ELF32 ELF header, not an ELF file");
 	unsigned char *org = buf;
@@ -513,6 +516,7 @@ int elfdump(unsigned char *buf, size_t size) {
 		show_byte(org, &buf, color);
 	color = color_next(color);
 
+	uint16_t type = *(uint16_t *)buf;
 	const char *type_str = NULL;
 	switch (*(ELFXX_HALF(class, buf))) {
 	case ET_NONE: type_str = "none"; break;
@@ -574,6 +578,7 @@ int elfdump(unsigned char *buf, size_t size) {
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Addr) : sizeof(Elf64_Addr));
 	color = color_next(color);
 
+	uintptr_t phoff = *(uintptr_t *)buf;
 	char *phoff_msg = malloc(sizeof("ehdr.e_phoff == #") + 16);
 	if (!phoff_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -584,6 +589,7 @@ int elfdump(unsigned char *buf, size_t size) {
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Off) : sizeof(Elf64_Off));
 	color = color_next(color);
 
+	uintptr_t shoff = *(uintptr_t *)buf;
 	char *shoff_msg = malloc(sizeof("ehdr.e_shoff == #") + 16);
 	if (!phoff_msg) return EXIT_FAILURE;
 	if (class == ELFCLASS32)
@@ -664,8 +670,57 @@ int elfdump(unsigned char *buf, size_t size) {
 	show_bytes(org, &buf, color, class == ELFCLASS32 ? sizeof(Elf32_Half) : sizeof(Elf64_Half));
 	color = color_next(color);
 
-	end_line(org, buf, true);
+	size_t ehdr_size = class == ELFCLASS32 ? sizeof(Elf32_Ehdr) : sizeof(Elf64_Ehdr);
+	size_t phdr_size = class == ELFCLASS32 ? sizeof(Elf32_Phdr) : sizeof(Elf64_Phdr);
+	size_t shdr_size = class == ELFCLASS32 ? sizeof(Elf32_Shdr) : sizeof(Elf64_Shdr);
 
+	// smallest of phdr and shdr for the class
+	size_t table_min;
+	table_min = phdr_size < shdr_size ? phdr_size : shdr_size;
+	if (size - (buf - org) < table_min)
+		cx_errx("file not large enough for shdr/phdr");
+
+	// get the offset of the header table that is next after the ELF header
+	uintptr_t next_off;
+	if (!phoff && !shoff) {
+		end_line(org, buf, true);
+		cx_errx("phoff and shoff not set");
+	}
+	if (phoff == shoff) {
+		end_line(org, buf, true);
+		cx_errx("phoff == shoff");
+	}
+	switch (type) {
+	case ET_EXEC:
+		if (!phoff) cx_errx("missing program header table");
+		break;
+	case ET_REL:
+		if (!shoff) cx_errx("missing section header table");
+		break;
+	default:
+		cx_errx("unhandled ELF file type %d", type);
+	}
+	next_off = phoff < shoff ? phoff : shoff;
+	// in case shdr is missing on executables, phdr on relocatables, etc.
+	if (!next_off) next_off = next_off == phoff ? shoff : phoff;
+	if (next_off + (next_off == phoff ? phdr_size : shdr_size) > size)
+		cx_errx("table after ELF header spans out of file's bounds");
+
+	if ((uintptr_t)(buf - org) < next_off)
+		msg_queue("non-ELF data", color, false, false);
+	while ((uintptr_t)(buf - org) < next_off) show_byte(org, &buf, color);
+	// had non-ELF data to show
+	if (next_off > ehdr_size) color = color_next(color);
+
+	int ret;
+	if (next_off == phoff) {
+		if ((ret = phdrdump(org, buf, size)))
+			return ret;
+	} else
+		if ((ret = shdrdump(org, buf, size)))
+			return ret;
+
+	end_line(org, buf, true);
 	return EXIT_SUCCESS;
 }
 
