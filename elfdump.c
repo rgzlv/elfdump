@@ -366,7 +366,7 @@ struct msg *msg_queue(const char *s, enum color color, bool bad, bool own) {
 		}
 		*(char *)msg->s = '!';
 		strcpy((char *)msg->s + 1, s);
-		if (own) free(s);
+		if (own) free((char *)s);
 		else own = true;
 	}
 	msg->color = color;
@@ -456,31 +456,39 @@ int phdrdump(uint16_t phnum, uint16_t phentsize, struct buf *buf, uint8_t class,
 		if (i != phnum) color = color_next(color);
 
 		uint32_t type = *(uint32_t *)buf->pos;
-		char *type_str = malloc(sizeof("phdr[#####].p_type == #") + 64);
-		if (!type_str) return EXIT_FAILURE;
-		const char *type_str_name;
+		char *type_msg = malloc(sizeof("phdr[#####].p_type == #") + 64);
+		if (!type_msg) return EXIT_FAILURE;
+		const char *type_msg_name;
 		switch (type) {
-		case PT_NULL: type_str_name = "PT_NULL"; break;
-		case PT_LOAD: type_str_name = "PT_LOAD"; break;
-		case PT_DYNAMIC: type_str_name = "PT_DYNAMIC"; break;
-		case PT_INTERP: type_str_name = "PT_INTERP"; break;
-		case PT_NOTE: type_str_name = "PT_NOTE"; break;
-		case PT_SHLIB: type_str_name = "PT_SHLIB"; break;
-		case PT_PHDR: type_str_name = "PT_PHDR"; break;
-		case PT_GNU_STACK: type_str_name = "PT_GNU_STACK"; break;
+		case PT_NULL: type_msg_name = "PT_NULL"; break;
+		case PT_LOAD: type_msg_name = "PT_LOAD"; break;
+		case PT_DYNAMIC: type_msg_name = "PT_DYNAMIC"; break;
+		case PT_INTERP: type_msg_name = "PT_INTERP"; break;
+		case PT_NOTE: type_msg_name = "PT_NOTE"; break;
+		case PT_SHLIB: type_msg_name = "PT_SHLIB"; break;
+		case PT_PHDR: type_msg_name = "PT_PHDR"; break;
+		case PT_GNU_STACK: type_msg_name = "PT_GNU_STACK"; break;
 		default:
 			if (type >= PT_LOPROC && type <= PT_HIPROC)
-				type_str_name = "[PT_LOPROC, PT_HIPROC]";
-			else type_str_name = NULL;
+				type_msg_name = "[PT_LOPROC, PT_HIPROC]";
+			else type_msg_name = NULL;
 		}
-		if (!type_str_name)
-			sprintf(type_str, "phdr[%" PRIu16 "].p_type", i);
+		if (!type_msg_name)
+			sprintf(type_msg, "phdr[%" PRIu16 "].p_type", i);
 		else
-			sprintf(type_str, "phdr[%" PRIu16 "].p_type == %s", i, type_str_name);
-		msg_queue(type_str, color, !type_str_name, true);
+			sprintf(type_msg, "phdr[%" PRIu16 "].p_type == %s", i, type_msg_name);
+		msg_queue(type_msg, color, !type_msg_name, true);
 		show_bytes(buf, color, sizeof(type));
 		if (type == PT_NULL) continue;
 		color = color_next(color);
+
+		if (class == ELFCLASS32) {
+			msg_queue("TODO offset", color, false, false);
+			show_bytes(buf, color, sizeof(uint32_t));
+		} else {
+			char *flags_msg = malloc(sizeof("phdr[#####].p_flags == #") + 32);
+			if (!flags_msg) return EXIT_FAILURE;
+		}
 
 		msg_queue("remaining", color, false, false);
 		show_bytes(buf, color, sizeof(Elf64_Phdr) - sizeof(type));
